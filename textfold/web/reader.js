@@ -378,7 +378,8 @@
     const trTitle = lang !== 'en' && m.titles && m.titles[lang];
     paperHead.innerHTML = `<h1>${esc(trTitle || m.title)}</h1>${trTitle ? `<div class="orig">${esc(m.title)}</div>` : ''}<div class="authors">${esc((m.authors || []).map(flipName).join(', '))}</div>` +
       (m.license || m.snapshot ? `<div class="license">${[m.license ? `<a href="${esc(m.license)}" target="_blank" rel="noopener">${esc(licenseName(m.license, t))}</a>` : '',
-        m.snapshot ? esc(t.snapshot.replace('{date}', longDate(m.snapshot))) : ''].filter(Boolean).join(' · ')}</div>` : '');
+        m.snapshot ? esc(t.snapshot.replace('{date}', longDate(m.snapshot))) : ''].filter(Boolean).join(' · ')}</div>` : '') +
+      (m.written && m.written.model ? `<div class="license">Written by ${esc(writtenBy(m.written))}</div>` : '');
     [...paperHead.children].forEach((c) => { c.dataset.id = `ph:${c.className || c.tagName}`; });
     capEpoch++;
     // theorem labels come from LaTeXML in English
@@ -415,6 +416,15 @@
 
   // a page read from the web is a snapshot: the day it was read, in the interface's language ("6 October 2026")
   const longDate = (iso) => { try { return new Date(`${iso}T12:00:00`).toLocaleDateString(I18N.htmlLang(ui), { year: 'numeric', month: 'long', day: 'numeric' }); } catch { return iso; } };
+  // which models wrote a text's levels, how many paragraphs each, and on whose account (a router such as
+  // openrouter/free picks a model for each section; paragraphs no model wrote keep the author's own sentences)
+  function writtenBy(w) {
+    const each = Object.entries(w.models || {});
+    const counts = each.length && !(each.length === 1 && each[0][0] === w.model)
+      ? ` (${each.map(([k, n]) => `${k === 'local' ? "the author's own sentences" : k}: ${n} paragraph${n === 1 ? '' : 's'}`).join('; ')})` : '';
+    return [w.model + counts, w.by].filter(Boolean).join(', ');
+  }
+
   // what a paper's license allows, in a few words: CC licenses by name; arXiv's own grants only arXiv the right to share
   function licenseName(url, t) {
     const cc = /creativecommons\.org\/(licenses|publicdomain)\/([a-z-]+)\/([\d.]+)/.exec(url);
@@ -1989,7 +1999,7 @@
     if (ask) {
       const turns = turnsOf(n), waiting = turns.some((x) => x.pending), failed = turns.length && turns[turns.length - 1].error;
       body = turns.map((x, k) => turnHtml(x, k === turns.length - 1)).join('') +
-        (turns.length && turns[turns.length - 1].model ? `<div class="np-model">${esc(turns[turns.length - 1].model)}</div>` : '') +
+        (turns.length && turns[turns.length - 1].model ? `<div class="np-model">${esc([turns[turns.length - 1].model, turns[turns.length - 1].by].filter(Boolean).join(', '))}</div>` : '') +
         (turns.length ? '' : tryRow(t.n_pstarters)) +
         (waiting ? '' : `<input class="np-input" type="text" placeholder="${esc(turns.some((x) => x.a) ? t.n_more : t.n_ask_ph)}" value="${esc(failed ? turns[turns.length - 1].q : '')}">`);
     } else {
@@ -2431,7 +2441,7 @@
         (n.text && n.text.trim() ? `<div class="pf-t">${esc(n.text.trim()).replace(/\n/g, '<br>')}</div>` : '') +
         said.map((x) => `<div class="pf-q">${esc(x.q)}</div><div class="pf-a">${mdLite(answerText(x.a))}</div>` +
           (x.cites && x.cites.length && !/\[\[/.test(x.a || '') ? `<div class="pf-c">${x.cites.map((u) => esc(citeLabel(u))).join(' · ')}</div>` : '')).join('') +
-        (said.length ? `<div class="pf-at">${esc(whole(a) ? T[ui].n_whole : askedAt(a))}${said[said.length - 1].model ? ` · ${esc(said[said.length - 1].model)}` : ''}</div>` : '') + '</div>';
+        (said.length ? `<div class="pf-at">${esc(whole(a) ? T[ui].n_whole : askedAt(a))}${said[said.length - 1].model ? ` · ${esc([said[said.length - 1].model, said[said.length - 1].by].filter(Boolean).join(', '))}` : ''}</div>` : '') + '</div>';
     }
     const pr = h('div', 'printout');
     pr.innerHTML = `<header><h1>${esc(m.title)}</h1><p>${esc((m.authors || []).map(flipName).join(', '))}</p>` +
@@ -2588,7 +2598,7 @@
       body += `<article class="n ${kindOf(n)}">${whole_ ? `<blockquote class="para">${whole_}</blockquote>` : a.quote.exact ? `<blockquote>${texLite(a.quote.exact)}</blockquote>` : ''}` +
         (n.text && n.text.trim() ? `<div class="t">${esc(n.text.trim()).replace(/\n/g, '<br>')}</div>` : '') +
         said.map((x) => `<div class="qa"><p class="q">${esc(x.q)}</p><div class="a">${mdLite(answerText(x.a))}</div></div>`).join('') +
-        (said.length ? `<p class="at">${esc(whole(a) ? t.n_whole : askedAt(a))}${said[said.length - 1].model ? ` · ${esc(said[said.length - 1].model)}` : ''}</p>` : '') + '</article>';
+        (said.length ? `<p class="at">${esc(whole(a) ? t.n_whole : askedAt(a))}${said[said.length - 1].model ? ` · ${esc([said[said.length - 1].model, said[said.length - 1].by].filter(Boolean).join(', '))}` : ''}</p>` : '') + '</article>';
     }
     const src = m.abs_url ? `<a href="${esc(m.abs_url)}">${esc(sourceName(m))}</a>` : esc(sourceName(m));
     const lic = m.license ? ` · <a href="${esc(m.license)}">${esc(licenseName(m.license, t))}</a>` : '';

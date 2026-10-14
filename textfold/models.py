@@ -6,9 +6,11 @@
 ThoughtDAG's rules: an API id that two providers share belongs to the env provider; the default is the
 reader's choice, else Claude Code's sonnet when Claude Code is here, else the first model there is.
 """
+import copy
 import json
 import os
 import shutil
+import threading
 
 from . import agents, bridges, providers
 from .store import HOME, OLD_HOMES
@@ -26,8 +28,27 @@ ANTHROPIC_PRESET = {"id": "anthropic", "name": "Anthropic", "base": "https://api
                     "fixed": ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-4-5"], "keyUrl": "https://console.anthropic.com/settings/keys"}
 
 
+# A shared server (agents.SHARED_HOST) keeps no settings: each reader's, their API keys included, stay in their browser,
+# which sends them with every request (web/own.js). Here are those of the reader this thread works for.
+_own = threading.local()
+
+
+def use(settings):
+    """On a shared server, the settings this thread works with from here on: a request's, as its browser sent them, or
+    a job's, as they were when its reader asked for it. None: a reader who has none yet."""
+    _own.settings, _own.saved = settings, False
+
+
+def saved():
+    """On a shared server, the settings this thread's request changed, to send back to the browser; else None."""
+    return _own.settings if getattr(_own, "saved", False) else None
+
+
 def load_settings():
-    s = {"model": None, "efforts": {}, "providers": [], "use_thoughtdag_env": False, "pdf_tier": "fast"}
+    s = {"model": None, "efforts": {}, "providers": [], "use_thoughtdag_env": False, "pdf_tier": "fast", "name": ""}
+    if agents.SHARED_HOST:   # the reader's own, never this computer's file
+        s.update({k: v for k, v in copy.deepcopy(getattr(_own, "settings", None) or {}).items() if k in s})
+        return s
     old_home = next((h for h in OLD_HOMES if (h / "settings.json").exists()), None)
     if not SETTINGS.exists() and old_home:   # from before the name TextFold: copied, kept
         SETTINGS.parent.mkdir(parents=True, exist_ok=True)
@@ -57,6 +78,9 @@ def import_thoughtdag_env(s):
 
 
 def save_settings(s):
+    if agents.SHARED_HOST:
+        _own.settings, _own.saved = s, True
+        return
     SETTINGS.parent.mkdir(parents=True, exist_ok=True)
     SETTINGS.write_text(json.dumps(s, indent=1, ensure_ascii=False))
     os.chmod(SETTINGS, 0o600)
@@ -65,7 +89,8 @@ def save_settings(s):
 def provider_list(s):
     if os.environ.get("TEXTFOLD_NO_MODELS"):   # (agents.scan): no provider, no bridge
         return []
-    env = providers.env_providers(s.get("use_thoughtdag_env", True), providers.ollama_models())
+    # (a shared server offers no Ollama it happens to find on its own computer: only one its .env names, OLLAMA_MODELS)
+    env = providers.env_providers(s.get("use_thoughtdag_env", True), None if agents.SHARED_HOST else providers.ollama_models())
     ui = []
     for p in providers.ui_providers(s):
         raw = next(x for x in s["providers"] if x["key"] == p["key"])
@@ -102,6 +127,11 @@ def default_model(s=None, cat=None):
     ids = [m["id"] for m in cat]
     if s.get("model") in ids:
         return s["model"]
+    if agents.SHARED_HOST:   # a reader's own key before the team's
+        own = {p["key"] for p in s.get("providers") or []}
+        mine = next((m["id"] for m in cat if m["group"] in own), None)
+        if mine:
+            return mine
     for pref in ("claude/claude-code/sonnet", "gpt-5.5", "openrouter/free"):   # Claude Code, the ChatGPT plan, OpenRouter's free models
         if pref in ids:
             return pref
@@ -126,8 +156,17 @@ def resolve(model_id=None, s=None):
     for p in provider_list(s):
         if any(m["id"] == model_id for m in p["models"]):
             return {"id": model_id, "kind": "api", "protocol": p["protocol"], "base": p["base"], "api_key": p["api_key"],
-                    "provider": p["name"], "model": model_id, "effort": None}
+                    "provider": p["name"], "model": model_id, "effort": None, "by": credit(p, s)}
     raise RuntimeError(f"Model {model_id} is not available (its agent or provider is gone)")
+
+
+def credit(provider, s):
+    """On a shared server, whose account a provider's calls are made on, as what they write says; else ''."""
+    if not agents.SHARED_HOST:
+        return ""
+    if provider["source"] == "ui":
+        return f"{s.get('name') or 'an unnamed reader'}'s {provider['name']} account"
+    return f"the team's {provider['name']} account"
 
 
 def for_task(spec, task, s=None):

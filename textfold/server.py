@@ -32,6 +32,11 @@
 
 Loopback only, and POSTs from other origins are refused. Settings and keys live in
 ~/.textfold/settings.json (mode 600), never in the project folder, which may be synced or shared.
+
+TEXTFOLD_HOST=<this computer's address on its network> makes it a server shared by several readers: it listens there,
+and one library is read and added to by all. It keeps no settings and no keys: each browser keeps its reader's own and
+sends them with every request (X-Textfold-Settings, web/own.js), and a job is written with those of the reader who
+asked for it. The agents, the ChatGPT bridge and the PDF engine's install are not offered (agents.py, bridges.py).
 """
 import base64
 import json
@@ -51,7 +56,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from . import agents, bridges, build, engine, fetch, langs, llm, local, models, notes, office, pdf, pdfdoc, pipeline, providers, store
 
-STATIC = {"app.js": "text/javascript", "app.css": "text/css", "reader.js": "text/javascript",
+STATIC = {"own.js": "text/javascript", "app.js": "text/javascript", "app.css": "text/css", "reader.js": "text/javascript",
           "reader.css": "text/css", "i18n.js": "text/javascript", "tutorial.js": "text/javascript"}
 # fonts and KaTeX, kept here so that no page asks another server for them (web/vendor)
 IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp"}
@@ -70,8 +75,10 @@ def models_payload():
     s = models.load_settings()
     cat, provs = models.catalog(s)
     selected = models.default_model(s, cat)
+    by = models.resolve(selected, s).get("by") if selected else ""
     return {
-        "models": cat, "selected": selected, "selectedName": next((m["name"] for m in cat if m["id"] == selected), selected),
+        "models": cat, "selected": selected, "name": s.get("name") or "",
+        "selectedName": " · ".join(filter(None, [next((m["name"] for m in cat if m["id"] == selected), selected), by])),
         "efforts": s.get("efforts") or {}, "bridge": bridges.bridge_status(),
         "agents": [{k: a[k] for k in ("runtime", "label", "binary", "path", "version", "runnable", "error")} | {"models": len(a["models"])}
                    for a in agents.STATE["agents"]],
@@ -92,6 +99,7 @@ class Jobs:
     def __init__(self):
         self.items, self.q, self.eq = {}, queue.Queue(), queue.Queue()
         self.stops = {}   # job id -> threading.Event, set when the reader stops it (kept out of the job: it is sent as JSON)
+        self.own = {}     # a shared server: job id -> its reader's settings and keys (kept out of the job the same way)
         self.pending = {}  # files that wait for the engine to be installed: pid -> (file, name, lang)
         for side in (store.DATA / "uploads").glob("*.json"):   # (kept beside each, so a restart forgets none)
             try:
@@ -109,6 +117,8 @@ class Jobs:
                "stage": "queued", "done": 0, "total": 0, "error": "", "log": [], "created": time.time(), "finished": None, **kw}
         self.items[job["id"]] = job
         self.stops[job["id"]] = threading.Event()
+        if agents.SHARED_HOST:   # (a job started by another, a conversion's levels, takes that job's)
+            self.own[job["id"]] = models.load_settings()
         q.put(job["id"])
         return job
 
@@ -186,6 +196,7 @@ class Jobs:
     def work(self):
         while True:
             job = self.items[self.q.get()]
+            models.use(self.own.pop(job["id"], None))
             if job["status"] == "stopped":
                 continue
             job["status"] = "running"
@@ -249,6 +260,7 @@ class Jobs:
     def work_engine(self):
         while True:
             job = self.items[self.eq.get()]
+            models.use(self.own.pop(job["id"], None))
             if job["status"] == "stopped":
                 continue
             job["status"] = "running"
@@ -394,14 +406,26 @@ def make_handler(jobs):
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", cache)
+            own = models.saved()
+            if own is not None:   # a shared server: the browser keeps them
+                self.send_header("X-Textfold-Settings", base64.b64encode(json.dumps(own).encode()).decode())
             self.end_headers()
             self.wfile.write(data)
 
         def json(self, obj, code=200):
             self.send(code, json.dumps(obj, ensure_ascii=False))
 
+        def reader(self):
+            """A shared server: this request's settings are its reader's own, as their browser sent them."""
+            try:
+                own = json.loads(base64.b64decode(self.headers.get("X-Textfold-Settings") or ""))
+            except ValueError:
+                own = None
+            models.use(own if isinstance(own, dict) else None)
+
         def do_GET(self):
             u = urlparse(self.path)
+            self.reader()
             try:
                 if u.path == "/":
                     return self.send(200, landing_page(jobs), "text/html; charset=utf-8")
@@ -480,8 +504,9 @@ def make_handler(jobs):
 
         def do_POST(self):
             u = urlparse(self.path)
+            self.reader()
             origin = self.headers.get("Origin")
-            if origin and urlparse(origin).hostname not in ("localhost", "127.0.0.1"):
+            if origin and urlparse(origin).hostname not in ("localhost", "127.0.0.1", agents.SHARED_HOST):
                 return self.json({"error": "forbidden"}, 403)  # another site may not drive this server
             try:
                 size = int(self.headers.get("Content-Length") or 0)
@@ -509,6 +534,8 @@ def make_handler(jobs):
                     except ValueError as e:   # not a paper's reference, or (a DOI) none Europe PMC can read in full
                         return self.json({"error": str(e) if str(e) in ("no-fulltext", "no-article") else "bad-ref"}, 400)
                     return self.json(job)
+                if u.path.startswith("/api/engine/") and agents.SHARED_HOST:   # 3.4 GB, and this computer's GPU
+                    return self.json({"error": "On a shared server the PDF engine is installed from its command line: python3 -m textfold engine install"}, 403)
                 if u.path == "/api/engine/install":
                     return self.json(jobs.install_engine())
                 if u.path == "/api/engine/remove":
@@ -626,6 +653,8 @@ def make_handler(jobs):
                                                  free_first=(preset or {}).get("id") == "openrouter")
                     return self.json({"models": found, "picked": picked, "recommend": (preset or {}).get("recommend", [])})
                 if u.path == "/api/providers/save":
+                    if agents.SHARED_HOST and not s.get("name"):   # it is shown on everything the key writes
+                        return self.json({"error": "Enter your name first (Your name, at the top): it is shown on what your key writes"}, 400)
                     preset = body.get("preset") or "custom"
                     known = providers.PRESETS + [models.ANTHROPIC_PRESET]
                     name = (body.get("name") or "").strip() or next((p["name"] for p in known if p["id"] == preset), "") or "Custom"
@@ -648,6 +677,8 @@ def make_handler(jobs):
                         s["use_thoughtdag_env"] = bool(body["use_thoughtdag_env"])
                     if body.get("pdf_tier") in engine.TIERS:
                         s["pdf_tier"] = body["pdf_tier"]
+                    if "name" in body:
+                        s["name"] = str(body["name"] or "").strip()[:60]
                     models.save_settings(s)
                     return self.json(models_payload())
                 if u.path == "/api/settings/test":
@@ -674,8 +705,8 @@ def serve(port=3017):
     jobs = Jobs()
     # look for the agents on this computer while the server comes up
     threading.Thread(target=agents.scan, kwargs={"log": print}, daemon=True).start()
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(jobs))
-    print(f"TextFold on http://localhost:{port}")
+    httpd = ThreadingHTTPServer((agents.SHARED_HOST or "127.0.0.1", port), make_handler(jobs))
+    print(f"TextFold on http://{agents.SHARED_HOST or 'localhost'}:{port}")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

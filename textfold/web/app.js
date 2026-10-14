@@ -430,6 +430,7 @@
     };
   }
   if (landing) {
+    api('/api/models').then((d) => { modelName = d.selectedName || ''; renderLanding(); }).catch(() => {});
     const sel = document.getElementById('lang');
     for (const code of I18N.CODES) sel.append(Object.assign(h('option'), { value: code, textContent: I18N.NATIVE[code] }));
     sel.value = [store.get('dr-lang'), uiLang].find((l) => l && I18N.NATIVE[l]);
@@ -658,7 +659,8 @@
     function render() {
       const t = T();
       dlg.innerHTML = `<div class="st"><h2>${esc(t.settings)}</h2>
-        <section class="st-uilang"><h3>${esc(t.ui_lang)}</h3><select class="st-ui">${I18N.CODES.map((c) => `<option value="${c}"${c === uiLang ? ' selected' : ''}>${esc(I18N.NATIVE[c])}</option>`).join('')}</select></section>
+        <section class="st-name"><h3>Your name</h3><div class="st-row"><input class="st-nm" value="${esc(data.name || '')}" placeholder="Shown on what your API key writes" autocomplete="name"></div></section>
+        <section class="st-uilang" hidden><h3>${esc(t.ui_lang)}</h3><select class="st-ui">${I18N.CODES.map((c) => `<option value="${c}"${c === uiLang ? ' selected' : ''}>${esc(I18N.NATIVE[c])}</option>`).join('')}</select></section>
         <section><h3>${esc(t.st_model)}</h3>${modelSection()}</section>
         <section><h3>${esc(t.st_agents)}</h3>${agentSection()}</section>
         <section><h3>${esc(t.st_providers)}</h3>${providerSection()}</section>
@@ -705,6 +707,7 @@
     function wire() {
       q('.st-close').onclick = () => dlg.close();
       q('.st-ui').onchange = (e) => { setUiLang(e.target.value); render(); };
+      q('.st-nm').onchange = async (e) => { update(await api('/api/settings', { name: e.target.value })); };
       const sel = q('.st-model');
       if (sel) sel.onchange = async () => { test = null; update(await api('/api/models/select', { model: sel.value })); };
       const tb = q('.st-testbtn');
@@ -762,7 +765,8 @@
       q('.pf-save').onclick = async () => {
         keep();
         const picked = [...dlg.querySelectorAll('.st-pick input:checked')].map((i) => i.value);
-        const d = await api('/api/providers/save', { key: form.key, preset: form.preset, name: form.name, base: form.base, api_key: form.api_key, models: picked, minted: !!form.minted });
+        let d;
+        try { d = await api('/api/providers/save', { key: form.key, preset: form.preset, name: form.name, base: form.base, api_key: form.api_key, models: picked, minted: !!form.minted }); } catch (x) { q('.pf-err').textContent = x.message; return; }
         form = null; update(d);
       };
     }

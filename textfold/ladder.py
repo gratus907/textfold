@@ -280,7 +280,7 @@ def build(doc, cfg, cache_dir, jobs=4, log=print, progress=None, force=False, st
             for n, uid in enumerate(c["units"]):
                 o = by_id.get(f"U{n}")
                 u = doc["units"][uid]
-                u["lad"] = assemble(u, o, doc["atoms"], model) if o else local(u, doc["atoms"])
+                u["lad"] = assemble(u, o, doc["atoms"], rec.get("served") or model) if o else local(u, doc["atoms"])
                 if not o:
                     warnings.append(f"{uid}: missing from reply")
                 elif words(u["lad"]["brief"][:u["lad"]["tn"]]) > BUDGET["takeaway"] + 4:

@@ -19,6 +19,7 @@ LANGS = {
     "ru": ("Russian", "Русский", "cyrillic"),
     "hi": ("Hindi", "हिन्दी", "devanagari"),
 }
+LANGS = {"en": LANGS["en"]}   # this fork reads and speaks English only (web/own.js): no translations
 
 _CHARS = {"takeaway": 28, "reason": 50, "topic": 6, "section": 32, "unit": "characters"}
 _WORDS = {"takeaway": 16, "reason": 26, "topic": 4, "section": 18, "unit": "words"}

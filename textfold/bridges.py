@@ -34,6 +34,8 @@ _SEEN = {"at": 0.0, "status": None}   # the bridge's last status, asked for agai
 
 
 def bridge_status(fresh=False):
+    if agents.SHARED_HOST:   # a shared server: the bridge would lend its own account's ChatGPT plan to every reader
+        return {"running": False, "node": False, "codexLogin": False}
     if not fresh and _SEEN["status"] is not None and time.time() - _SEEN["at"] < 5:
         return _SEEN["status"]
     try:
@@ -59,6 +61,8 @@ def bridge_provider(text_only):
 
 def bridge_start():
     """Start the bridge detached (a browser opens to sign in when Codex has no login); the caller polls the status."""
+    if agents.SHARED_HOST:
+        raise RuntimeError("A shared server has no ChatGPT bridge: add an API key in the settings")
     env = agents.child_env()
     npx = shutil.which("npx", path=env["PATH"])
     if not npx:

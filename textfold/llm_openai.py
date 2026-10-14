@@ -97,5 +97,5 @@ def call(prompt, schema, spec, system, timeout):
             raise RuntimeError("no JSON in reply")
         _WORKED[key] = i
         cost = ((d.get("usage") or {}).get("cost")) if "openrouter.ai" in base else None
-        return json.loads(m.group(0)), cost
+        return json.loads(m.group(0)), cost, d.get("model")   # (the model that answered: a router's pick)
     raise RuntimeError(f"{spec.get('provider') or base}: {last}")

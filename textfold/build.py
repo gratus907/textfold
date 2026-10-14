@@ -100,7 +100,7 @@ def page(doc, app=False, assets=None, saved=None):
     t = (WEB / "template.html").read_text()
     if app:
         head = fonts_head(APP_ASSETS) + '<link rel="stylesheet" href="/static/reader.css"><link rel="stylesheet" href="/static/app.css">'
-        scripts = ('<script src="/static/i18n.js"></script><script src="/static/tutorial.js"></script><script src="/static/reader.js"></script>'
+        scripts = ('<script src="/static/i18n.js"></script><script src="/static/own.js"></script><script src="/static/tutorial.js"></script><script src="/static/reader.js"></script>'
                    '<script src="/static/app.js"></script>')
         side, cls, katex = '<aside id="sidebar" class="collapsed"></aside>', "app", APP_ASSETS + "katex/"
     else:

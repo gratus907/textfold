@@ -43,6 +43,10 @@ REGISTRY = [
     ("aider", "Aider", "aider", [], False),
 ]
 PREFIX = {"claude-code": "claude/", "codex": "codex/", "pi": "pi/"}
+# TEXTFOLD_HOST=<this computer's address on its network>: a server shared by several readers. It listens there
+# (server.py), each reader's settings and keys stay in their own browser (models.py, web/own.js), and the agents and
+# sign-ins of the account it runs under are offered to no one (locate, bridges.py).
+SHARED_HOST = os.environ.get("TEXTFOLD_HOST")
 COMMON = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "~/.bun/bin", "~/.npm-global/bin", "~/.local/bin"]
 
 
@@ -98,6 +102,8 @@ def child_env():
 
 
 def locate(binary, extra=()):
+    if SHARED_HOST:
+        return None
     for d in [os.path.expanduser(x) for x in extra] + search_dirs():
         f = os.path.join(d, binary)
         if os.path.isfile(f) and os.access(f, os.X_OK):

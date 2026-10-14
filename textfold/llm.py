@@ -68,15 +68,17 @@ def call(prompt, schema, model, cache_dir: Path, force=False, timeout=900, syste
         return json.loads(f.read_text()), True
     note = None
     try:
-        out, cost = _once(prompt, schema, spec, timeout, system)
+        out, cost, *served = _once(prompt, schema, spec, timeout, system)
     except Exception as e:
         # A reasoning level is a request, never a condition: whatever went wrong with it set (a flag or field an API no
         # longer takes, a level a model does not have), the call is made once more the model's own way.
         if not effort:
             raise
         note = f"reasoning level {effort} dropped: {str(e)[:200]}"
-        out, cost = _once(prompt, schema, {**spec, "effort": None}, timeout, system)
+        out, cost, *served = _once(prompt, schema, {**spec, "effort": None}, timeout, system)
     rec = {"out": out, "cost": cost, "models": [spec["id"]] + ([effort] if effort else [])}
+    if served and served[0]:   # the model a provider says answered, when it is not the one asked for by name
+        rec["served"] = served[0]
     if note:
         rec["note"] = note
     f.write_text(json.dumps(rec, ensure_ascii=False, indent=1))

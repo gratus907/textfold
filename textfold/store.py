@@ -15,6 +15,7 @@ import os
 import re
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 
 from . import ladder
@@ -92,6 +93,10 @@ def resolve(ref):
         return pid
     if doi:
         return epmc.by_doi(doi)
+    patent = re.fullmatch(r"[A-Z]{2}\d{5,}[A-Z]\d?", re.sub(r"[\s,]", "", ref).upper())
+    if patent:   # a patent's number (US10000000B2): its Google Patents page, read as a web page
+        from . import webpage
+        return webpage.register(f"https://patents.google.com/patent/{patent.group(0)}/en")
     if re.match(r"https?://[^\s/]+\.[^\s/]+", ref, re.I):   # any other web page: its article
         from . import webpage
         return webpage.register(ref)
@@ -123,9 +128,9 @@ def stamp():
     return time.strftime("%Y-%m-%dT%H:%M:%S")
 
 
-def save_en(doc, model):
+def save_en(doc, model, by=""):
     write(doc["meta"]["id"], "en", {
-        "version": stamp(), "model": model,
+        "version": stamp(), "model": model, "by": by,
         "units": {uid: u["lad"] for uid, u in doc["units"].items() if "lad" in u},
         "chunks": {c["id"]: c.get("lad") for c in doc["chunks"]},
         "edges": [e for e in doc["edges"] if e["rel"] != "ref"],
@@ -183,6 +188,8 @@ def assemble(pid, only=None):
         apply_en(doc, en)
         meta["langs"].append("en")
         meta["versions"]["en"] = en["version"]
+        meta["written"] = {"model": en.get("model") or "", "by": en.get("by") or "",   # and how many paragraphs each model wrote
+                           "models": dict(Counter(u["lad"].get("model") or "local" for u in doc["units"].values() if "lad" in u).most_common())}
     else:
         for u in doc["units"].values():
             u["lad"] = ladder.local(u, doc["atoms"])

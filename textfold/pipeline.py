@@ -50,13 +50,14 @@ def generate(ref, lang, cfg, force=False, jobs=4, progress=lambda *a: None, log=
         # fetched and parsed, so it can be read as written; its levels need a model
         raise RuntimeError("No model is available: install Claude Code, Codex or Pi, or add an API provider in the settings")
     model = llm.label(cfg) if cfg else ""
+    by = llm.spec_of(cfg).get("by", "") if cfg else ""   # a shared server: whose account it is written on
     if en is None or (force and lang == "en"):
         check()
         ladder.build(doc, task(cfg, "ladder"), cache, jobs=jobs, log=log, progress=lambda a, b: progress("ladder", a, b), force=force, stop=stop)
         check()
         progress("links", 0, 1)
         links.build(doc, task(cfg, "links"), cache, log=log, force=force)
-        store.save_en(doc, model)
+        store.save_en(doc, model, by)
         en = store.read(pid, "en")
     else:
         store.apply_en(doc, en)

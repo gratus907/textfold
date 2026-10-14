@@ -291,7 +291,7 @@ def ask(pid, nid, question, spec, timeout=300, ui=None):
     nxt = [re.sub(r"\s+", " ", CITE.sub("", q)).strip() for q in (out.get("next") or []) if isinstance(q, str)]
     note["thread"] = done + [{"q": question, "a": answer, "takeaway": CITE.sub("", out["takeaway"]).strip(),
                               "cites": cites, "next": [q for q in nxt if q][:2],
-                              "model": spec["id"], "lang": lang, "at": now()}]
+                              "model": rec.get("served") or spec["id"], "by": spec.get("by", ""), "lang": lang, "at": now()}]
     note.pop("ask", None)
     note["kind"] = "ask"
     put(pid, note)
