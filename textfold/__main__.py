@@ -6,11 +6,16 @@
   python -m textfold export <arxiv id>                   one self-contained HTML file in out/<id>/
   python3 -m textfold get <link or file> [--level topic] [--section 3] [--json]   a document at one level (for a person or an agent)
   python3 -m textfold engine status | install | remove              the PDF engine (MinerU, about 3.4 GB)
+  python3 -m textfold publish <id or link> --to http://<team server>:3017 [--as name]   a text folded here, to the team (publish.py)
 """
 import argparse
+import getpass
+import json
+import os
 import shutil
 import sys
 import time
+import urllib.error
 from pathlib import Path
 
 from . import build, local, pipeline
@@ -109,6 +114,21 @@ def main():
         ap.add_argument("--json", action="store_true", help="the whole document in the TextFold format (docs/format.md)")
         ap.add_argument("--no-generate", action="store_true", help="call no model: the levels already written, or the local ones")
         return sys.exit(get(ap.parse_args(sys.argv[2:])))
+    if len(sys.argv) > 1 and sys.argv[1] == "publish":
+        team = os.environ.get("TEXTFOLD_TEAM")
+        ap = argparse.ArgumentParser(prog="python3 -m textfold publish", description="Publish a text folded here to the team's server: its levels, not your sign-in.")
+        ap.add_argument("paper", help="its id, its link, or its address in the reader (http://localhost:3017/p/<id>)")
+        ap.add_argument("--to", default=team, required=not team, help="the team's server, http://<address>:3017 (default: TEXTFOLD_TEAM)")
+        ap.add_argument("--as", dest="name", default=getpass.getuser(), help="your name, shown on what you publish (default: your login name)")
+        a = ap.parse_args(sys.argv[2:])
+        from . import publish
+        try:
+            got = publish.send(a.paper, a.to, a.name)
+        except urllib.error.HTTPError as e:
+            return sys.exit(f"Not published: {json.loads(e.read() or b'{}').get('error') or e}")
+        except ValueError as e:
+            return sys.exit(f"Not published: {e}")
+        return print(f"Published: {got['title']} ({got['placed']} of {got['of']} paragraphs with levels)\n  {a.to.rstrip('/')}/p/{got['paper']}")
     if len(sys.argv) > 1 and sys.argv[1] == "engine":
         return sys.exit(engine_cmd(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "export":

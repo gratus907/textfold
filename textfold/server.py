@@ -9,6 +9,7 @@
   POST /api/generate          {paper, lang, force}: queue a generation; one runs at a time. paper: an arXiv id or
                               link, a PMC or PPR id, a DOI (Europe PMC, epmc.py), or a stored document's id
   POST /api/import            {name, text}: store a Markdown file as a paper (local.py); its id, to generate
+  POST /api/publish           a text folded on another computer, with its levels as words (publish.py)
   GET  /api/models            every model this computer can reach: local agents and API providers
   POST /api/models/select     {model, effort}: the model generations use
   POST /api/agents/scan       look for agents again (also done at startup)
@@ -54,7 +55,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from . import agents, bridges, build, engine, fetch, langs, llm, local, models, notes, office, pdf, pdfdoc, pipeline, providers, store
+from . import agents, bridges, build, engine, fetch, langs, llm, local, models, notes, office, pdf, pdfdoc, pipeline, providers, publish, store
 
 STATIC = {"own.js": "text/javascript", "app.js": "text/javascript", "app.css": "text/css", "reader.js": "text/javascript",
           "reader.css": "text/css", "i18n.js": "text/javascript", "tutorial.js": "text/javascript"}
@@ -521,6 +522,16 @@ def make_handler(jobs):
                     if size > pdf.LIMIT:
                         return self.json({"error": "too-large"}, 413)
                     return self.json(*take_file(jobs, self.rfile.read(size), self.headers))
+                if u.path == "/api/publish":   # a text folded on a reader's own computer, its pictures with it (publish.py)
+                    if size > pdf.LIMIT:
+                        return self.json({"error": "too-large"}, 413)
+                    body = json.loads(self.rfile.read(size) or b"{}")
+                    if any(j["pid"] == body.get("paper") and j["status"] in ("queued", "running") for j in jobs.list()):
+                        return self.json({"error": "busy: it is being folded here"}, 409)
+                    try:
+                        return self.json(publish.receive(body))
+                    except ValueError as e:
+                        return self.json({"error": str(e)}, 400)
                 if size > 12_000_000:   # a Markdown file is far smaller; this is a request gone wrong
                     return self.json({"error": "too-large"}, 413)
                 body = json.loads(self.rfile.read(size) or b"{}")

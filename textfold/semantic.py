@@ -72,6 +72,23 @@ def normalize(html, resolve_img=None, sizes=False):
     return str(art)
 
 
+def sanitize(html, images):
+    """normalize()'s output, written on another computer (publish.py), made safe here as normalize makes any document:
+    its article alone, with only the elements and attributes a document needs, and only the pictures that came with it
+    (images: their img/... paths). What normalize kept, this keeps: the document reads as it did there."""
+    soup = BeautifulSoup(html, "lxml")
+    art = soup.find("article") or soup.new_tag("article")
+    for c in art.find_all(string=lambda s: isinstance(s, Comment)):
+        c.extract()
+    _sanitize(art, sizes=True)
+    for el in art.find_all(True):
+        _keep_classes(el)
+        if el.name == "img" and el.get("src") not in images:
+            el.attrs.pop("src", None)
+    art.attrs = {"class": "ltx_document"}
+    return str(art)
+
+
 def _ours(el):
     return any(c.startswith("ltx_") for c in el.get("class", []))
 

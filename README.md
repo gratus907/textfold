@@ -1,3 +1,18 @@
+> **This fork (branch `shared-byok`) keeps one TextFold library for a team.** Fold on your own computer with your own
+> Claude Code, Codex or API key, then publish what was written to the team's server. Your sign-in never leaves your
+> computer; your notes and questions stay there too.
+>
+> ```sh
+> pip install "git+https://github.com/gratus907/textfold@shared-byok"
+> textfold serve                       # read and fold at http://localhost:3017, as usual
+> textfold publish <link, id, or http://localhost:3017/p/<id>> --to http://<the team's server>:3017 --as "<your name>"
+> ```
+>
+> Set `TEXTFOLD_TEAM=http://<the team's server>:3017` to leave out `--to`. The team's server runs
+> `TEXTFOLD_HOST=<its address> textfold serve`. There, everyone reads every text, and anyone without a fold of their
+> own can fold with their own API key (kept in their browser) or the team's model. The server rebuilds what is
+> published with its own code and does not trust the upload as sent (`textfold/publish.py`).
+
 <div align="center">
 
 <img src="https://raw.githubusercontent.com/chenxiachan/textfold/main/docs/assets/logo.svg" width="72" alt="TextFold">
