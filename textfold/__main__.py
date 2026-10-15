@@ -1,8 +1,8 @@
 """TextFold.
 
   python -m textfold serve [--port 3017]                 the local app (landing, sidebar, reader)
-  python -m textfold <arxiv id or url> [--lang zh] ...   generate from the command line, then export
-  python -m textfold notes.md [--lang zh] ...           the same for a Markdown file
+  python -m textfold <link or file> [--model sonnet] [--lang zh] ...   generate from the command line, then export
+  python -m textfold <link or file> --to http://<team server>:3017 [--as name]   or generate, then publish to the team
   python -m textfold export <arxiv id>                   one self-contained HTML file in out/<id>/
   python3 -m textfold get <link or file> [--level topic] [--section 3] [--json]   a document at one level (for a person or an agent)
   python3 -m textfold engine status | install | remove              the PDF engine (MinerU, about 3.4 GB)
@@ -25,12 +25,12 @@ def _say(*a):
     print(*a, file=sys.stderr, flush=True)
 
 
-def get(a):
-    """A document at one level, on stdout: written first when it has no levels yet (a model is called), unless
-    --no-generate. A PDF (or a Word, PowerPoint, Excel, EPUB or HTML file, a picture) goes through the PDF engine; a
+def _ingest(ref):
+    """The id of the text a link or file names, stored here (None: a file only the PDF engine reads, and it is not
+    installed). A PDF (or a Word, PowerPoint, Excel, EPUB or HTML file, a picture) goes through the PDF engine; a
     Markdown or text file is read as it is."""
-    from . import engine, fold, models, office, pdfdoc, store
-    f = Path(a.ref).expanduser()
+    from . import engine, models, office, pdfdoc, store
+    f = Path(ref).expanduser()
     ext = engine.kind_of(f.name) if f.is_file() else None
     if ext:
         data = f.read_bytes()
@@ -40,8 +40,8 @@ def get(a):
         elif not (store.pdir(pid) / "meta.json").exists():
             if not engine.where():
                 what = "PDF" if ext == "pdf" else "picture" if ext in engine.PICTURES else f"{engine.FILES[ext]} file"
-                _say(f"This {what} needs the PDF engine: python3 -m textfold engine install")
-                return 2
+                _say(f"This {what} needs the PDF engine: textfold engine install")
+                return None
             tier = engine.tier_for(f"x.{ext}", models.load_settings().get("pdf_tier") or "fast")
             out = store.DATA / "uploads" / f"{pid}-{tier}"
             src = f
@@ -58,7 +58,17 @@ def get(a):
     elif f.is_file():
         pid = local.import_file(f)
     else:
-        pid = store.resolve(a.ref)
+        pid = store.resolve(ref)
+    return pid
+
+
+def get(a):
+    """A document at one level, on stdout: written first when it has no levels yet (a model is called), unless
+    --no-generate."""
+    from . import fold, models
+    pid = _ingest(a.ref)
+    if pid is None:
+        return 2
     try:
         spec = None if a.no_generate else models.resolve(None)
     except RuntimeError:
@@ -68,7 +78,7 @@ def get(a):
     except RuntimeError as e:   # fetched and parsed; its levels need a model: the local ones, said so
         if "No model" not in str(e):
             raise
-        _say("No model: the written levels are the author's first sentences (connect one with python3 -m textfold serve, Settings).")
+        _say("No model: the written levels are the author's first sentences (connect one with textfold serve, Settings).")
     d = fold.document(pid, a.lang)
     if a.json:
         import json
@@ -76,6 +86,17 @@ def get(a):
     else:
         print(fold.markdown(d, a.level, a.section), end="")
     return 0
+
+
+def _publish(ref, to, name):
+    from . import publish
+    try:
+        got = publish.send(ref, to, name)
+    except urllib.error.HTTPError as e:
+        return sys.exit(f"Not published: {json.loads(e.read() or b'{}').get('error') or e}")
+    except ValueError as e:
+        return sys.exit(f"Not published: {e}")
+    print(f"Published: {got['title']} ({got['placed']} of {got['of']} paragraphs with levels)\n  {to.rstrip('/')}/p/{got['paper']}")
 
 
 def engine_cmd(args):
@@ -86,7 +107,7 @@ def engine_cmd(args):
     elif what == "remove":
         engine.uninstall()
     elif what != "status":
-        _say("python3 -m textfold engine status | install | remove")
+        _say("textfold engine status | install | remove")
         return 2
     st = engine.status()
     print(f"PDF engine: {'installed' if st['installed'] else 'not installed'} (MinerU {st['version']})"
@@ -121,33 +142,32 @@ def main():
         ap.add_argument("--to", default=team, required=not team, help="the team's server, http://<address>:3017 (default: TEXTFOLD_TEAM)")
         ap.add_argument("--as", dest="name", default=getpass.getuser(), help="your name, shown on what you publish (default: your login name)")
         a = ap.parse_args(sys.argv[2:])
-        from . import publish
-        try:
-            got = publish.send(a.paper, a.to, a.name)
-        except urllib.error.HTTPError as e:
-            return sys.exit(f"Not published: {json.loads(e.read() or b'{}').get('error') or e}")
-        except ValueError as e:
-            return sys.exit(f"Not published: {e}")
-        return print(f"Published: {got['title']} ({got['placed']} of {got['of']} paragraphs with levels)\n  {a.to.rstrip('/')}/p/{got['paper']}")
+        return _publish(a.paper, a.to, a.name)
     if len(sys.argv) > 1 and sys.argv[1] == "engine":
         return sys.exit(engine_cmd(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "export":
         print(build.export(sys.argv[2]))
         return
-    ap = argparse.ArgumentParser(prog="textfold", description="Generate a zoomable reader for an arXiv paper or a Markdown file.")
-    ap.add_argument("paper", help="arXiv id or URL, e.g. 2512.23916, or a Markdown file")
+    ap = argparse.ArgumentParser(prog="textfold", description="Generate a zoomable reader for a link or a file; with --to, publish it to the team's server.")
+    ap.add_argument("paper", help="a link (arXiv, a DOI, PubMed Central, bioRxiv, Wikipedia, GitHub, any web page), an arXiv id, or a file (.pdf, .docx, .md, ...)")
     ap.add_argument("--lang", action="append", default=[], help="also generate this language (zh, ja, es, ...); repeatable")
-    ap.add_argument("--model", default="sonnet", help="model alias for `claude -p` (default: sonnet)")
+    ap.add_argument("--model", default="sonnet", help="sonnet, opus (Claude Code), codex/codex/<model> (Codex), or an API provider's model (default: sonnet)")
     ap.add_argument("--jobs", type=int, default=4, help="parallel model calls")
     ap.add_argument("--force", action="store_true", help="regenerate (ignore what is stored and cached)")
+    ap.add_argument("--to", default=os.environ.get("TEXTFOLD_TEAM"), help="then publish it to the team's server, http://<address>:3017 (default: TEXTFOLD_TEAM)")
+    ap.add_argument("--as", dest="name", default=getpass.getuser(), help="your name, shown on what you publish (default: your login name)")
     a = ap.parse_args()
     t0 = time.time()
-    ref = local.import_file(a.paper) if Path(a.paper).suffix.lower() in local.KINDS and Path(a.paper).is_file() else a.paper
-    pid = None
+    pid = _ingest(a.paper)
+    if pid is None:
+        return sys.exit(2)
     for lang in ["en"] + a.lang:
-        pid = pipeline.generate(ref, lang, a.model, force=a.force, jobs=a.jobs, log=print,
-                                progress=lambda s, d, t: print(f"  {s} {d}/{t}", end="\r"))
-    print(f"\n  → {build.export(pid)}  ({time.time() - t0:.0f}s)")
+        pipeline.generate(pid, lang, a.model, force=a.force, jobs=a.jobs, log=print,
+                          progress=lambda s, d, t: print(f"  {s} {d}/{t}", end="\r"))
+    if not a.to:
+        return print(f"\n  → {build.export(pid)}  ({time.time() - t0:.0f}s)")
+    print(f"\n  folded in {time.time() - t0:.0f}s")
+    _publish(pid, a.to, a.name)
 
 
 if __name__ == "__main__":

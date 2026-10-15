@@ -4,9 +4,13 @@
 >
 > ```sh
 > pip install "git+https://github.com/gratus907/textfold@shared-byok"
-> textfold serve                       # read and fold at http://localhost:3017, as usual
+> textfold <link or file> --model sonnet --to http://<the team's server>:3017 --as "<your name>"   # fold, then publish
+> textfold serve                       # or read and fold at http://localhost:3017, as usual, then:
 > textfold publish <link, id, or http://localhost:3017/p/<id>> --to http://<the team's server>:3017 --as "<your name>"
 > ```
+>
+> `--model`: `sonnet` or `opus` (Claude Code), `codex/codex/<model>` (Codex). A PDF or a picture needs the PDF engine
+> once (`textfold engine install`, about 3.4 GB); Word, PowerPoint, Excel, EPUB, HTML and Markdown files do not.
 >
 > Set `TEXTFOLD_TEAM=http://<the team's server>:3017` to leave out `--to`. The team's server runs
 > `TEXTFOLD_HOST=<its address> textfold serve`. There, everyone reads every text, and anyone without a fold of their

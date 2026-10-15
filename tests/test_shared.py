@@ -151,9 +151,10 @@ def test_shared_server():
             def run(*a):
                 return subprocess.run([sys.executable, "-m", "textfold", *a], cwd=ROOT, env=home, capture_output=True, text=True, timeout=60, check=False)
 
-            assert run("get", str(laptop / "note.md")).returncode == 0
+            out = run(str(laptop / "note.md"), "--model", "team-model", "--to", f"http://127.0.0.1:{port}", "--as", "Reader C")   # folded, then published
+            assert out.returncode == 0 and "Published: Folded at home" in out.stdout, out
             pid = next((laptop / "data" / "papers").iterdir()).name
-            out = run("publish", f"http://localhost:3017/p/{pid}", "--to", f"http://127.0.0.1:{port}", "--as", "Reader C")
+            out = run("publish", f"http://localhost:3017/p/{pid}", "--to", f"http://127.0.0.1:{port}", "--as", "Reader C")   # again, from its address
             assert out.returncode == 0 and out.stdout.startswith("Published: Folded at home"), out
             mine, team = (json.loads((d / "papers" / pid / "layers" / "en.json").read_text()) for d in (laptop / "data", Path(tmp) / "data"))
             assert team["units"] == {k: v for k, v in mine["units"].items() if v["model"] != "local"} and team["units"]

@@ -143,7 +143,7 @@ def send(ref, to, name):
     pid = m.group(1) if m and store.valid_id(m.group(1)) else store.resolve(ref)
     en = store.read(pid, "en")
     if not en:
-        raise ValueError(f"{pid} has no levels yet: fold it first (python3 -m textfold get {pid})")
+        raise ValueError(f"{pid} has no levels yet: fold it first (textfold {pid} --model sonnet)")
     doc = store.parsed(pid)
     body = {"paper": pid, "name": name, "fingerprint": fingerprint(doc), "words": words(doc, en)}
     if not store.ARXIV_ID.fullmatch(pid):
