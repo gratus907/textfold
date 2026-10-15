@@ -4,11 +4,14 @@
          codex        `codex exec --output-schema`            (structured output)
          pi           `pi -p --mode json`                     (JSON asked for in the prompt)
   api    anthropic    the official SDK (`pip install anthropic`), structured output
-         openai       any OpenAI-compatible endpoint (llm_openai.py), JSON mode
+         openai       any OpenAI-compatible endpoint (llm_openai.py), structured output where the provider has it
 
 Replies are cached on disk by a hash of everything that shapes them, so a rebuild costs nothing until
 the prompt, the schema, the model or its effort changes. `force` skips the cache read: that is what
 "regenerate" means, a new sample from the model.
+
+Every reply is checked against its schema (and the caller's own check) before it is kept: one that does not fit is
+asked for again, up to ASKS times in all, and then the call fails, naming what was wrong. Nothing stands in for it.
 """
 import hashlib
 import json
@@ -35,6 +38,26 @@ def system_for(meta):
 
 # server-side refusal fallback ("default" routing) is accepted on these
 _FALLBACK_OK = {"claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5"}
+ASKS = 3   # a reply that does not fit is asked for again; after this many in all, the call fails
+_TYPES = {"object": dict, "array": list, "string": str, "integer": int, "number": (int, float), "boolean": bool}
+
+
+def misfit(v, schema, at="reply"):
+    """Where a reply departs from its JSON schema, as a line naming the field and what was written there; None when it
+    fits. (The parts of JSON Schema TextFold's schemas use: type, properties, required, items, enum.)"""
+    t = schema.get("type")
+    if t and (not isinstance(v, _TYPES[t]) or (isinstance(v, bool) and t != "boolean")):
+        return f"{at} is {json.dumps(v, ensure_ascii=False)[:80]}, not {'an' if t[0] in 'aeiou' else 'a'} {t}"
+    if "enum" in schema and v not in schema["enum"]:
+        return f"{at} is {json.dumps(v, ensure_ascii=False)[:80]}, not one of {', '.join(map(str, schema['enum']))}"
+    if t == "object":
+        missing = [k for k in schema.get("required", []) if k not in v]
+        if missing:
+            return f"{at}.{missing[0]} is missing"
+        return next((w for k, sub in schema.get("properties", {}).items() if k in v and (w := misfit(v[k], sub, f"{at}.{k}"))), None)
+    if t == "array":
+        return next((w for i, x in enumerate(v) if (w := misfit(x, schema.get("items", {}), f"{at}[{i}]"))), None)
+    return None
 
 
 def spec_of(model):
@@ -53,8 +76,9 @@ def label(model):
     return spec_of(model)["id"]
 
 
-def call(prompt, schema, model, cache_dir: Path, force=False, timeout=900, system=SYSTEM):
-    """(system: the generation's role unless a caller has another, as the questions about a paper do)"""
+def call(prompt, schema, model, cache_dir: Path, force=False, timeout=900, system=SYSTEM, check=None):
+    """(system: the generation's role unless a caller has another, as the questions about a paper do; check: what is
+    wrong with a reply that fits the schema, or None, for what a schema cannot say)"""
     spec = spec_of(model)
     effort = spec.get("effort")
     if spec.get("runtime") == "claude-code" and not effort:
@@ -64,18 +88,32 @@ def call(prompt, schema, model, cache_dir: Path, force=False, timeout=900, syste
     key = hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:24]
     cache_dir.mkdir(parents=True, exist_ok=True)
     f = cache_dir / f"{key}.json"
+    def wrong(out):
+        return misfit(out, schema) or (check(out) if check else None)
+
     if f.exists() and not force:
-        return json.loads(f.read_text()), True
-    note = None
-    try:
-        out, cost, *served = _once(prompt, schema, spec, timeout, system)
-    except Exception as e:
-        # A reasoning level is a request, never a condition: whatever went wrong with it set (a flag or field an API no
-        # longer takes, a level a model does not have), the call is made once more the model's own way.
-        if not effort:
-            raise
-        note = f"reasoning level {effort} dropped: {str(e)[:200]}"
-        out, cost, *served = _once(prompt, schema, {**spec, "effort": None}, timeout, system)
+        rec = json.loads(f.read_text())
+        if not wrong(rec["out"]):   # (one kept before replies were checked, and does not fit, is asked for again)
+            return rec, True
+    spent = []
+    for _ in range(ASKS):
+        note = None
+        try:
+            out, cost, *served = _once(prompt, schema, spec, timeout, system)
+        except Exception as e:
+            # A reasoning level is a request, never a condition: whatever went wrong with it set (a flag or field an API
+            # no longer takes, a level a model does not have), the call is made once more the model's own way.
+            if not effort:
+                raise
+            note = f"reasoning level {effort} dropped: {str(e)[:200]}"
+            out, cost, *served = _once(prompt, schema, {**spec, "effort": None}, timeout, system)
+        spent.append(cost)
+        why = wrong(out)
+        if not why:
+            break
+    else:
+        raise RuntimeError(f"{spec['id']} wrote a reply that does not fit, {ASKS} times; the last: {why}")
+    cost = sum(c for c in spent if c) if any(spent) else cost
     rec = {"out": out, "cost": cost, "models": [spec["id"]] + ([effort] if effort else [])}
     if served and served[0]:   # the model a provider says answered, when it is not the one asked for by name
         rec["served"] = served[0]
@@ -96,7 +134,7 @@ def _once(prompt, schema, spec, timeout, system):
     if spec["protocol"] == "anthropic":
         return _anthropic(prompt, schema, spec, timeout, system)
     from .llm_openai import call as openai_call
-    return openai_call(prompt, schema, spec, system, timeout)
+    return openai_call(prompt, _closed(schema), spec, system, timeout)
 
 
 def _claude(prompt, schema, model, effort, timeout, system=SYSTEM):

@@ -11,9 +11,12 @@ leaves the short levels meaningless. So:
             phrase is there verbatim, else the model's phrase as written
 Written words that also occur in the key sentences carry `m`, the index of
 that source token, so the morph can slide the word instead of swapping it.
-One model call per chunk (a heading and the units under it).
+One model call per chunk (a heading and the units under it). A chunk's reply must write every one of its units and the
+section's line (whole), or it is asked for again (llm.call); a chunk that still cannot be written stops the build,
+and no unit is left to its author's first sentences.
 """
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from . import kinds, llm
@@ -248,17 +251,34 @@ def section_ladder(o, topic_budget=3, doc=None, chunk=None):
     return {"take": take, "topic": locate(clean(o.get("topic")), take) or head_words(take, topic_budget)}
 
 
+def whole(n):
+    """A chunk's reply checked for what its schema cannot say: each of its n units written, and the section's line."""
+    def check(out):
+        ids = {u["id"] for u in out["units"]}
+        missing = [f"U{i}" for i in range(n) if f"U{i}" not in ids]
+        if missing:
+            return f"units {', '.join(missing)} missing"
+        empty = next((u["id"] for u in out["units"] if not clean(u["takeaway"])), None)
+        if empty:
+            return f"units[{empty}].takeaway is empty"
+        return None if clean(out["section"]["takeaway"]) else "section.takeaway is empty"
+    return check
+
+
 def build(doc, cfg, cache_dir, jobs=4, log=print, progress=None, force=False, stop=None):
     chunks = [c for c in doc["chunks"] if c["units"]]
     cost, warnings, errors = 0.0, [], []
     model = llm.label(cfg)
+    failed = threading.Event()   # one chunk could not be written: the rest are not sent
 
     def run(c):
-        if stop is not None and stop.is_set():   # stopped: the chunks not yet sent are skipped
+        if failed.is_set() or (stop is not None and stop.is_set()):   # the chunks not yet sent are skipped
             return c, None, llm.Stopped()
         try:
-            return c, llm.call(prompt_for(doc, c), SCHEMA, cfg, cache_dir, force, system=llm.system_for(doc["meta"])), None
-        except Exception as e:  # one failed chunk falls back to local ladders, the rest still build
+            return c, llm.call(prompt_for(doc, c), SCHEMA, cfg, cache_dir, force, system=llm.system_for(doc["meta"]),
+                               check=whole(len(c["units"]))), None
+        except Exception as e:
+            failed.set()
             return c, None, e
 
     if progress:
@@ -270,25 +290,24 @@ def build(doc, cfg, cache_dir, jobs=4, log=print, progress=None, force=False, st
             if stop is not None and stop.is_set():
                 raise llm.Stopped()
             if err:
-                errors.append(err)
-                log(f"  ! {c['id']}: {err}")
+                if not isinstance(err, llm.Stopped):   # (a chunk skipped after another failed is not a failure)
+                    errors.append((c, err))
+                    log(f"  ! {c['id']}: {err}")
                 continue
             rec, cached = res
             cost += 0 if cached else (rec.get("cost") or 0)
             out = rec["out"]
-            by_id = {x.get("id"): x for x in out.get("units", [])}
+            by_id = {x["id"]: x for x in out["units"]}
             for n, uid in enumerate(c["units"]):
-                o = by_id.get(f"U{n}")
                 u = doc["units"][uid]
-                u["lad"] = assemble(u, o, doc["atoms"], rec.get("served") or model) if o else local(u, doc["atoms"])
-                if not o:
-                    warnings.append(f"{uid}: missing from reply")
-                elif words(u["lad"]["brief"][:u["lad"]["tn"]]) > BUDGET["takeaway"] + 4:
+                u["lad"] = assemble(u, by_id[f"U{n}"], doc["atoms"], rec.get("served") or model)
+                if words(u["lad"]["brief"][:u["lad"]["tn"]]) > BUDGET["takeaway"] + 4:
                     warnings.append(f"{uid}: long takeaway ({words(u['lad']['brief'][:u['lad']['tn']])} words)")
-            c["lad"] = section_ladder(out.get("section"), 3, doc, c)
+            c["lad"] = section_ladder(out["section"], 3, doc, c)
             log(f"  {'·' if cached else '✓'} {c['id']:<14} {len(c['units']):>2} units")
-    if chunks and len(errors) == len(chunks):  # nothing came back: a backend problem, not a paper problem
-        raise RuntimeError(str(errors[0]))
+    if errors:   # the sections written are kept in the cache: writing it again asks only for the rest
+        c, err = errors[0]
+        raise RuntimeError(f"section {c['num'] or c['title'] or c['id']}: {err}") from err
     for u in doc["units"].values():
         u.setdefault("lad", local(u, doc["atoms"]))
     for w in warnings:

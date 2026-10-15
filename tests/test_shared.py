@@ -27,10 +27,19 @@ from textfold import providers, publish, semantic
 from textfold.parse import parse
 
 ROOT = Path(__file__).resolve().parent.parent
-# a provider's reply to any section: its first paragraph written, the rest left to the author's sentences
-REPLY = {"model": "stand-in-served", "choices": [{"message": {"content": json.dumps({
-    "section": {"takeaway": "Things hold.", "topic": "holding"},
-    "units": [{"id": "U0", "role": "context", "takeaway": "A thing holds.", "topic": "thing", "reason": "It was shown.", "evidence": [0]}]})}}]}
+UNIT = {"role": "context", "takeaway": "A thing holds.", "topic": "thing", "reason": "It was shown.", "evidence": [0]}
+
+
+def reply_to(body, bad):
+    """A provider's reply to a request, by the schema it asks for: every paragraph of a section written, or no argument
+    links. bad: what a free model once wrote wrong ("number" where a reason goes, a paragraph "missing")."""
+    schema = body["response_format"]["json_schema"]["schema"]   # (asked for as structured output)
+    if "links" in schema["properties"]:
+        out = {"links": []}
+    else:
+        out = {"section": {"takeaway": "Things hold.", "topic": "holding"}, "units": [{**UNIT, "id": f"U{i}"} for i in range(10) if not (bad == "missing" and i == 2)]}
+        out["units"][1]["reason"] = 34 if bad == "number" else UNIT["reason"]
+    return {"model": "stand-in-served", "choices": [{"message": {"content": json.dumps(out)}}]}
 PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="   # one pixel
 TEXT = "# A title\n\n## One\n\n" + "\n\n".join(f"Paragraph {i} says a thing, and then it says why that thing holds." for i in range(4))
 
@@ -43,12 +52,17 @@ def free_port():
 
 def test_shared_server():
     keys_seen = []
+    bad = {"left": 2}   # section replies still to be written wrong: the first two, a number for a reason, then a paragraph missing
 
     class Provider(BaseHTTPRequestHandler):
         def do_POST(self):
             keys_seen.append(self.headers.get("Authorization"))
-            self.rfile.read(int(self.headers.get("Content-Length") or 0))
-            reply = json.dumps(REPLY).encode()
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
+            wrong = None
+            if bad["left"] > 0 and "links" not in body["response_format"]["json_schema"]["schema"]["properties"]:
+                wrong = "missing" if bad["left"] == 1 else "number"
+                bad["left"] -= 1
+            reply = json.dumps(reply_to(body, wrong)).encode()
             self.send_response(200)
             self.send_header("Content-Length", str(len(reply)))
             self.end_headers()
@@ -125,10 +139,23 @@ def test_shared_server():
                 assert status == 200, job
                 used, written_by, wrote = written(job, own.get(who))
                 assert used and set(used) == {f"Bearer {key}"} and written_by == by, (who, used, written_by)
-                assert wrote == {"stand-in-served", "local"}, wrote   # the model that answered, not the one asked for
+                assert wrote == {"stand-in-served"}, wrote   # the model that answered, not the one asked for; every paragraph
+            assert bad["left"] == 0   # the replies with a number for a reason, and a paragraph missing, were asked for again
             page = urllib.request.urlopen(f"http://127.0.0.1:{port}/p/{paper}", timeout=30).read().decode()
-            assert '"written":{' in page and '"stand-in-served":' in page and '"local":' in page   # paragraphs per model
+            assert '"written":{' in page and '"stand-in-served":' in page   # paragraphs per model
             assert call("/api/generate", {"paper": paper, "lang": "ko"})[0] == 400   # English only
+
+            # a reply that never fits stops the fold, naming what was wrong; what was written before stays
+            bad["left"] = 99
+            job = call("/api/generate", {"paper": paper, "lang": "en", "force": True}, own=own["B"])[1]
+            for _ in range(240):
+                job = next(j for j in call("/api/jobs", own=own["B"])[1] if j["id"] == job["id"])
+                if job["status"] not in ("queued", "running"):
+                    break
+                time.sleep(0.25)
+            assert job["status"] == "error" and "3 times" in job["error"] and "units[1].reason is 34, not a string" in job["error"], job
+            assert json.loads((Path(tmp) / "data" / "papers" / paper / "layers" / "en.json").read_text())["by"] == "Reader B's B account"
+            bad["left"] = 0
 
             # the account the server runs under lends nothing: no agent, no bridge, no engine install
             assert not any(a["path"] for a in mine["agents"]) and not any(m["kind"] == "agent" for m in mine["models"])

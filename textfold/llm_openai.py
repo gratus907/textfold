@@ -1,8 +1,9 @@
 """Any OpenAI-compatible chat endpoint: Zhipu, Qwen, DeepSeek, Kimi, OpenRouter, OpenAI, Google's
 compatible layer, MiniMax, a local Ollama, or a custom one (the providers of ThoughtDAG).
 
-Not every provider honours a JSON schema, so the schema rides in the prompt and JSON mode is asked for;
-a provider that rejects JSON mode is asked again without it.
+The schema rides in the prompt and is asked for as structured output (OpenRouter: only from a provider that has it),
+so a provider that has it cannot write a number where text goes. A provider that refuses it is asked again in JSON
+mode, then with neither; llm.call checks every reply against the schema either way.
 
 A reasoning level (spec["effort"]: off, low, medium, high; None for the model's own) is spelled the way each provider
 documents it. These spellings change as APIs change, so none of them is relied on: a request a provider refuses is
@@ -66,14 +67,17 @@ def call(prompt, schema, spec, system, timeout):
         headers["X-Title"] = "TextFold"
     ways = reasoning(base, level)
     key = (base, spec["model"], level)
-    shapes = [(r, jm) for r in ways for jm in (True, False)]   # each reasoning shape with JSON mode, then without
+    form = {"schema": {"response_format": {"type": "json_schema", "json_schema": {"name": "reply", "strict": True, "schema": schema}}}
+                      | ({"provider": {"require_parameters": True}} if "openrouter.ai" in base else {}),
+            "json": {"response_format": {"type": "json_object"}}, "none": {}}
+    shapes = [(r, fm) for fm in form for r in ways]   # structured output in each reasoning shape, then JSON mode, then neither
     start = _WORKED.get(key, 0)
     last, busy = None, 0
     i = start
     while i < len(shapes):
-        r, jm = shapes[i]
+        r, fm = shapes[i]
         try:
-            d = _post(f"{base}/chat/completions", {**body, **r, **({"response_format": {"type": "json_object"}} if jm else {})}, headers, timeout)
+            d = _post(f"{base}/chat/completions", {**body, **r, **form[fm]}, headers, timeout)
         except urllib.error.HTTPError as e:
             last = e
             if e.code in (429, 502, 503, 529) and busy < len(WAITS):   # rate-limited or busy: wait, then the same again
